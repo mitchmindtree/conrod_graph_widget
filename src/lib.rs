@@ -1,8 +1,5 @@
 #[macro_use] extern crate conrod;
 #[macro_use] extern crate conrod_derive;
-extern crate petgraph;
-
-//mod petgraph_impls;
 
 use conrod::{color, widget, Color, Colorable, Point, Positionable, Scalar, Widget, UiCell};
 use conrod::position::{Direction, Range, Rect};
