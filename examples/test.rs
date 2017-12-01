@@ -4,9 +4,9 @@
 extern crate conrod_graph_widget;
 extern crate petgraph;
 
-use conrod::{widget, Colorable, Labelable, Positionable, Sizeable, Widget};
+use conrod::{widget, Labelable, Positionable, Sizeable, Widget};
 use conrod::backend::glium::glium::{self, Surface};
-use conrod_graph_widget::{Event, EdgeEvent, NodeEvent, Graph};
+use conrod_graph_widget::{Event, EdgeEvent, NodeEvent, NodeSocket, Graph};
 use std::collections::HashMap;
 
 
@@ -16,7 +16,7 @@ widget_ids! {
     }
 }
 
-type MyGraph = petgraph::Graph<&'static str, ()>;
+type MyGraph = petgraph::Graph<&'static str, (usize, usize)>;
 type Layout = conrod_graph_widget::Layout<petgraph::graph::NodeIndex>;
 
 fn main() {
@@ -31,11 +31,11 @@ fn main() {
     let d = graph.add_node("D");
     let e = graph.add_node("E");
     graph.extend_with_edges(&[
-        (a, c),
-        (a, d),
-        (b, d),
-        (c, d),
-        (d, e),
+        (a, c, (1, 0)),
+        (a, d, (0, 1)),
+        (b, d, (0, 0)),
+        (c, d, (0, 2)),
+        (d, e, (0, 0)),
     ]);
 
     // Construct a starting layout for the nodes.
@@ -153,10 +153,22 @@ fn set_widgets(ui: &mut conrod::UiCell, ids: &Ids, graph: &mut MyGraph, layout: 
     // 2. `Edges` for setting an edge widget for each edge.
     // 3. `Final` for optionally displaying zoom percentage and cam position.
 
-    let session = Graph::from_graph(graph, layout)
-        .wh_of(ui.window)
-        .middle_of(ui.window)
-        .set(ids.graph, ui);
+    let session = {
+        // An identifier for each node in the graph.
+        let node_indices = graph.node_indices();
+        // Describe each edge in the graph as NodeSocket -> NodeSocket.
+        let edges = graph.raw_edges()
+            .iter()
+            .map(|e| {
+                let start = NodeSocket { id: e.source(), socket_index: e.weight.0 };
+                let end = NodeSocket { id: e.target(), socket_index: e.weight.1 };
+                (start, end)
+            });
+        Graph::new(node_indices, edges, layout)
+            .wh_of(ui.window)
+            .middle_of(ui.window)
+            .set(ids.graph, ui)
+    };
 
     //////////////////
     ///// EVENTS /////
@@ -170,6 +182,9 @@ fn set_widgets(ui: &mut conrod::UiCell, ids: &Ids, graph: &mut MyGraph, layout: 
                 // NodeEvent::Add(node_kind) => {
                 // },
                 NodeEvent::Remove(node_id) => {
+                },
+                NodeEvent::Dragged { node_id, to, .. } => {
+                    *layout.get_mut(&node_id).unwrap() = to;
                 },
             },
             Event::Edge(event) => match event {
@@ -232,6 +247,6 @@ fn set_widgets(ui: &mut conrod::UiCell, ids: &Ids, graph: &mut MyGraph, layout: 
         // `start` - The unique node identifier for the node at the start of the edge with point.
         // `end` - The unique node identifier for the node at the end of the edge with point.
         // `widget_id` - The wiget identifier for this edge.
-        edge.straight_line().set(ui);
+        edge.straight_line(ui).set(ui);
     }
 }
