@@ -15,3 +15,13 @@ Features
 - Provides `widget::Id`s to use for each node and edge within the graph.
 - Yields events for adding and removing nodes and edges, dragging nodes,
   selections, etc.
+
+License
+-------
+
+Licensed under either of
+
+ * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
