@@ -4,9 +4,9 @@
 extern crate conrod_graph_widget;
 extern crate petgraph;
 
-use conrod::{widget, Borderable, Labelable, Positionable, Sizeable, Widget};
+use conrod::{widget, Borderable, Colorable, Labelable, Positionable, Sizeable, Widget};
 use conrod::backend::glium::glium::{self, Surface};
-use conrod_graph_widget::{Event, EdgeEvent, Node, NodeEvent, NodeSocket, Graph};
+use conrod_graph_widget::{node, Event, EdgeEvent, Node, NodeEvent, NodeSocket, Graph};
 use std::collections::HashMap;
 
 
@@ -53,8 +53,7 @@ fn main() {
         .with_title("Conrod Graph Widget")
         .with_dimensions(WIDTH, HEIGHT);
     let context = glium::glutin::ContextBuilder::new()
-        .with_vsync(true)
-        .with_multisampling(4);
+        .with_vsync(true);
     let display = glium::Display::new(window, context, &events_loop).unwrap();
 
     // construct our `Ui`.
@@ -219,9 +218,10 @@ fn set_widgets(ui: &mut conrod::UiCell, ids: &Ids, graph: &mut MyGraph, layout: 
         //
         // `wiget_id` - The widget identifier for the widget that will represent this node.
         let node_id = node.node_id();
+        let inputs = graph.neighbors_directed(node_id, petgraph::Incoming).count();
+        let outputs = graph.neighbors_directed(node_id, petgraph::Outgoing).count();
         let button = widget::Button::new().label(&graph[node_id]).border(0.0);
-        let widget = Node::new(button).inputs(3).outputs(3).w_h(100.0, 60.0);
-
+        let widget = Node::new(button).inputs(inputs).outputs(outputs).w_h(100.0, 60.0);
         for _click in node.widget(widget).set(ui).widget_event {
             println!("{} was clicked!", &graph[node_id]);
         }
@@ -235,12 +235,16 @@ fn set_widgets(ui: &mut conrod::UiCell, ids: &Ids, graph: &mut MyGraph, layout: 
 
     let mut session = session.next();
     for edge in session.edges() {
+        let (a, b) = node::edge_socket_rects(&edge, ui);
+        let line = widget::Line::abs(a.xy(), b.xy())
+            .color(conrod::color::DARK_CHARCOAL)
+            .thickness(3.0);
 
         // Each edge contains:
         //
         // `start` - The unique node identifier for the node at the start of the edge with point.
         // `end` - The unique node identifier for the node at the end of the edge with point.
         // `widget_id` - The wiget identifier for this edge.
-        edge.straight_line(ui).set(ui);
+        edge.widget(line).set(ui);
     }
 }

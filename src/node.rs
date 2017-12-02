@@ -1,4 +1,4 @@
-use conrod::{widget, color, Color, Point, Positionable, Scalar, Sizeable, Widget};
+use conrod::{self, widget, color, Color, Point, Positionable, Scalar, Sizeable, Widget, Ui};
 use conrod::position::{Axis, Direction, Range, Rect};
 use conrod::widget::primitive::shape::triangles::{ColoredPoint, Triangle};
 use std::iter::once;
@@ -93,6 +93,23 @@ widget_ids! {
 /// Unique state for the `Node`.
 pub struct State {
     ids: Ids,
+    // Tracks whether or not a socket is currently captured under the mouse.
+    capturing_socket: Option<(SocketType, usize)>,
+    // The number of input sockets.
+    inputs: usize,
+    // The number of output sockets.
+    outputs: usize,
+}
+
+/// Describes whether a socket is associated with a node's inputs or outputs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SocketType { Input, Output }
+
+/// The event produced by the `Node` widget.
+#[derive(Clone, Debug)]
+pub struct Event<W> {
+    /// The event produced by the inner widget `W`.
+    pub widget_event: W,
 }
 
 impl<W> Node<W> {
@@ -153,13 +170,6 @@ impl<W> Node<W> {
     }
 }
 
-/// The event produced by 
-#[derive(Clone, Debug)]
-pub struct Event<W> {
-    /// The event produced by the inner widget `W`.
-    pub widget_event: W,
-}
-
 impl<W> Deref for Event<W> {
     type Target = W;
     fn deref(&self) -> &Self::Target {
@@ -170,6 +180,228 @@ impl<W> Deref for Event<W> {
 impl<W> DerefMut for Event<W> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.widget_event
+    }
+}
+
+
+// A multiplier for the scalar direction.
+fn direction_scalar(direction: Direction) -> Scalar {
+    match direction {
+        Direction::Forwards => 1.0,
+        Direction::Backwards => -1.0,
+    }
+}
+
+// Axis from a given side and the scalar offset from the centre of the rect.
+fn side_axis_and_scalar(rect: Rect, side: SocketSide, border: Scalar) -> (Axis, Scalar) {
+    match side {
+        SocketSide::Left => (Axis::Y, rect.left() + border / 2.0),
+        SocketSide::Right => (Axis::Y, rect.right() - border / 2.0),
+        SocketSide::Bottom => (Axis::X, rect.bottom() + border / 2.0),
+        SocketSide::Top => (Axis::X, rect.top() - border / 2.0),
+    }
+}
+
+// The position of the socket at the given index.
+fn socket_position(index: usize, start_pos: Point, step: [Scalar; 2]) -> Point {
+    let x = start_pos[0] + step[0] * index as Scalar;
+    let y = start_pos[1] + step[1] * index as Scalar;
+    [x, y]
+}
+
+// Dimensions for a socket rectangle given some axis.
+fn socket_rect_dim(axis: Axis, border: Scalar, socket_length: Scalar) -> [Scalar; 2] {
+    match axis {
+        Axis::Y => [border, socket_length],
+        Axis::X => [socket_length, border],
+    }
+}
+
+// Returns the range along the rect for the given axis.
+fn rect_range(axis: Axis, rect: Rect) -> Range {
+    match axis {
+        Axis::X => rect.x,
+        Axis::Y => rect.y,
+    }
+}
+
+// The gap between each socket and the position of the first socket.
+fn socket_step_and_start(
+    n_sockets: usize,
+    axis: Axis,
+    direction: Direction,
+    inner_rect: Rect,
+    socket_length: Scalar,
+    side_scalar: Scalar,
+) -> ([Scalar; 2], Point)
+{
+    let direction_scalar = direction_scalar(direction);
+    let socket_range = rect_range(axis, inner_rect);
+    let socket_position_range = socket_range.pad(socket_length / 2.0);
+    let socket_start_scalar = match direction {
+        Direction::Forwards => socket_position_range.start,
+        Direction::Backwards => socket_position_range.end,
+    };
+    let step = if n_sockets > 1 {
+        socket_position_range.len() * direction_scalar / (n_sockets - 1) as Scalar
+    } else {
+        0.0
+    };
+    let (step, socket_start_position) = match axis {
+        Axis::X => {
+            let step = [step, 0.0];
+            let x = socket_start_scalar;
+            let y = side_scalar;
+            (step, [x, y])
+        },
+        Axis::Y => {
+            let step = [0.0, step];
+            let x = side_scalar;
+            let y = socket_start_scalar;
+            (step, [x, y])
+        },
+    };
+    (step, socket_start_position)
+}
+
+// Produce the `Rect` for a socket from the raw params required.
+fn socket_rectangle(
+    index: usize,
+    n_sockets: usize,
+    node_rect: Rect,
+    border: Scalar,
+    layout: SocketLayout,
+    socket_length: Scalar,
+) -> Rect {
+    let SocketLayout { side, direction } = layout;
+    let (axis, side_scalar) = side_axis_and_scalar(node_rect, side, border);
+    let inner_rect = node_rect.pad(border);
+    let (step, start_pos) = socket_step_and_start(n_sockets, axis, direction, inner_rect,
+                                                  socket_length, side_scalar);
+    let xy = socket_position(index, start_pos, step);
+    let socket_dim = socket_rect_dim(axis, border, socket_length);
+    let rect = Rect::from_xy_dim(xy, socket_dim);
+    rect
+}
+
+
+/// Retrieve the `Rect` for the given socket on the given node.
+///
+/// Returns `None` if there is no node for the given `Id` or if the `socket_index` is out of range.
+pub fn socket_rect(
+    node_id: widget::Id,
+    socket_type: SocketType,
+    socket_index: usize,
+    ui: &Ui,
+) -> Option<Rect> {
+    ui.widget_graph()
+        .widget(node_id)
+        .and_then(|container| {
+            let unique = container.state_and_style::<State, Style>();
+            let &conrod::graph::UniqueWidgetState { ref state, ref style } = match unique {
+                None => return None,
+                Some(unique) => unique,
+            };
+            let rect = container.rect;
+            let border = style.border(&ui.theme);
+            let socket_length = style.socket_length(&ui.theme);
+
+            let (n_sockets, layout) = match socket_type {
+                SocketType::Input => (state.inputs, style.input_socket_layout(&ui.theme)),
+                SocketType::Output => (state.outputs, style.output_socket_layout(&ui.theme)),
+            };
+
+            let rect = socket_rectangle(socket_index, n_sockets, rect, border, layout,
+                                        socket_length);
+            Some(rect)
+        })
+}
+
+/// Returns a `Rect` for an edge's start and end nodes.
+pub fn edge_socket_rects<NI>(edge: &super::Edge<NI>, ui: &Ui) -> (Rect, Rect)
+where
+    NI: super::NodeId,
+{
+    let (start_id, end_id) = super::edge_node_widget_ids(edge, ui);
+    let start = edge.start();
+    let end = edge.end();
+    let start_rect = socket_rect(start_id, SocketType::Output, start.socket_index, ui)
+        .expect("no node widget found for the edge's `start_id`");
+    let end_rect = socket_rect(end_id, SocketType::Input, end.socket_index, ui)
+        .expect("no node widget found for the edge's `end_id`");
+    (start_rect, end_rect)
+}
+
+/// Produces an iterator yielding a `Rect` for each socket for both inputs and outputs
+/// respectively.
+///
+/// Returns `None` if no node is found for the given `widget::Id`.
+pub fn socket_rects(node_id: widget::Id, ui: &Ui) -> Option<(SocketRects, SocketRects)> {
+    ui.widget_graph()
+        .widget(node_id)
+        .and_then(|container| {
+            let unique = container.state_and_style::<State, Style>();
+            let &conrod::graph::UniqueWidgetState { ref state, ref style } = match unique {
+                None => return None,
+                Some(unique) => unique,
+            };
+            let rect = container.rect;
+            let border = style.border(&ui.theme);
+            let socket_length = style.socket_length(&ui.theme);
+            let input_socket_rects = SocketRects {
+                index: 0,
+                n_sockets: state.inputs,
+                node_rect: rect,
+                border,
+                layout: style.input_socket_layout(&ui.theme),
+                socket_length,
+            };
+            let output_socket_rects = SocketRects {
+                index: 0,
+                n_sockets: state.outputs,
+                node_rect: rect,
+                border,
+                layout: style.output_socket_layout(&ui.theme),
+                socket_length,
+            };
+            Some((input_socket_rects, output_socket_rects))
+        })
+}
+
+/// The rectangle for each socket (either inputs or outputs only).
+#[derive(Clone)]
+pub struct SocketRects {
+    // Current socket index.
+    index: usize,
+    // Total number of sockets.
+    n_sockets: usize,
+    node_rect: Rect,
+    border: Scalar,
+    layout: SocketLayout,
+    // The length of the socket rectangle along the axis along which it is placed.
+    socket_length: Scalar,
+}
+
+impl Iterator for SocketRects {
+    type Item = Rect;
+    fn next(&mut self) -> Option<Self::Item> {
+        let SocketRects {
+            ref mut index,
+            n_sockets,
+            node_rect,
+            border,
+            layout,
+            socket_length,
+        } = *self;
+
+        // If the index is equal to or greater than the number of sockets, we're done.
+        if *index >= n_sockets {
+            return None;
+        }
+
+        let rect = socket_rectangle(*index, n_sockets, node_rect, border, layout, socket_length);
+        *index += 1;
+        Some(rect)
     }
 }
 
@@ -184,6 +416,9 @@ where
     fn init_state(&self, id_gen: widget::id::Generator) -> Self::State {
         State {
             ids: Ids::new(id_gen),
+            capturing_socket: None,
+            inputs: self.inputs,
+            outputs: self.outputs,
         }
     }
 
@@ -197,113 +432,116 @@ where
         let socket_length = style.socket_length(&ui.theme);
         let border = style.border(&ui.theme);
 
-        // The triangles for the inner rectangle surface first.
-        let inner_rect = rect.pad(border);
-        let (inner_tri_a, inner_tri_b) = widget::primitive::shape::rectangle::triangles(inner_rect);
-        let inner_triangles = once(inner_tri_a).chain(once(inner_tri_b));
-
-        // Triangles for the border.
-        let border_triangles = widget::bordered_rectangle::border_triangles(rect, border).unwrap();
-
-        // Axis from a given side and the scalar offset from the centre.
-        let side_axis_and_scalar = |side| match side {
-            SocketSide::Left => (Axis::Y, rect.left() + border / 2.0),
-            SocketSide::Right => (Axis::Y, rect.right() - border / 2.0),
-            SocketSide::Bottom => (Axis::X, rect.bottom() + border / 2.0),
-            SocketSide::Top => (Axis::X, rect.top() - border / 2.0),
-        };
-
-        // A socket rectangle given some side.
-        let socket_rect_dim = |axis| match axis {
-            Axis::Y => [border, socket_length],
-            Axis::X => [socket_length, border],
-        };
-
-        // A multiplier for the scalar direction.
-        fn direction_scalar(direction: Direction) -> Scalar {
-            match direction {
-                Direction::Forwards => 1.0,
-                Direction::Backwards => -1.0,
-            }
+        if state.inputs != inputs {
+            state.update(|state| state.inputs = inputs);
         }
 
-        // The range along which socket positions can be placed.
-        let socket_range = |axis| -> Range {
-            match axis {
-                Axis::X => inner_rect.x,
-                Axis::Y => inner_rect.y,
-            }
-        };
-
-        // The gap between each socket.
-        let socket_step_and_start = |n_sockets, axis, direction, side_scalar| -> ([Scalar; 2], Point) {
-            let direction_scalar = direction_scalar(direction);
-            let socket_range = socket_range(axis);
-            let socket_position_range = socket_range.pad(socket_length / 2.0);
-            let socket_start_scalar = match direction {
-                Direction::Forwards => socket_position_range.start,
-                Direction::Backwards => socket_position_range.end,
-            };
-            let step = socket_position_range.len() * direction_scalar / (n_sockets - 1) as Scalar;
-            let (step, socket_start_position) = match axis {
-                Axis::X => {
-                    let step = [step, 0.0];
-                    let x = socket_start_scalar;
-                    let y = side_scalar;
-                    (step, [x, y])
-                },
-                Axis::Y => {
-                    let step = [0.0, step];
-                    let x = side_scalar;
-                    let y = socket_start_scalar;
-                    (step, [x, y])
-                },
-            };
-            (step, socket_start_position)
-        };
-
-        // The position of the socket at the given index.
-        fn socket_position(index: usize, start_pos: Point, step: [Scalar; 2]) -> Point {
-            let x = start_pos[0] + step[0] * index as Scalar;
-            let y = start_pos[1] + step[1] * index as Scalar;
-            [x, y]
+        if state.outputs != outputs {
+            state.update(|state| state.outputs = outputs);
         }
-
-        // A function for producing the triangles of sockets along some axis.
-        let socket_triangles = |n_sockets, SocketLayout { side, direction }| {
-            let (axis, side_scalar) = side_axis_and_scalar(side);
-            let (step, start_pos) = socket_step_and_start(n_sockets, axis, direction, side_scalar);
-            let socket_dim = socket_rect_dim(axis);
-            (0..n_sockets)
-                .flat_map(move |i| {
-                    let xy = socket_position(i, start_pos, step);
-                    let rect = Rect::from_xy_dim(xy, socket_dim);
-                    let (tri_a, tri_b) = widget::primitive::shape::rectangle::triangles(rect);
-                    once(tri_a).chain(once(tri_b))
-                })
-        };
-
-        // Triangles for sockets.
-        let input_socket_layout = style.input_socket_layout(&ui.theme);
-        let output_socket_layout = style.output_socket_layout(&ui.theme);
-        let input_socket_triangles = socket_triangles(inputs, input_socket_layout);
-        let output_socket_triangles = socket_triangles(outputs, output_socket_layout);
 
         // Colors the given triangle with the given color.
         fn color_triangle(Triangle(arr): Triangle<Point>, color: color::Rgba) -> Triangle<ColoredPoint> {
             Triangle([(arr[0], color), (arr[1], color), (arr[2], color)])
         }
 
-        // Retrieve colours from the style.
+        // The triangles for the inner rectangle surface first.
+        let inner_rect = rect.pad(border);
+        let (inner_tri_a, inner_tri_b) = widget::primitive::shape::rectangle::triangles(inner_rect);
         let inner_color = style.color(&ui.theme).into();
+        let inner_triangles = once(inner_tri_a)
+            .chain(once(inner_tri_b))
+            .map(|tri| color_triangle(tri, inner_color));
+
+        // Triangles for the border.
         let border_color = style.border_color(&ui.theme).into();
-        let socket_color = style.socket_color(&ui.theme).into();
+        let border_triangles = widget::bordered_rectangle::border_triangles(rect, border).unwrap();
+        let border_triangles = border_triangles
+            .iter()
+            .cloned()
+            .map(|tri| color_triangle(tri, border_color));
+
+        // A function for producing the rectangles of sockets along some axis.
+        let socket_rectangles = |n_sockets, layout| {
+            SocketRects {
+                index: 0,
+                n_sockets,
+                layout,
+                node_rect: rect,
+                border,
+                socket_length,
+            }
+        };
+
+        let input_socket_layout = style.input_socket_layout(&ui.theme);
+        let output_socket_layout = style.output_socket_layout(&ui.theme);
+
+        // Whether or not the given point is over a socket.
+        let over_socket = |abs_point: Point| -> Option<(SocketType, usize)> {
+            for (i, rect) in socket_rectangles(inputs, input_socket_layout).enumerate() {
+                if rect.is_over(abs_point) {
+                    return Some((SocketType::Input, i));
+                }
+            }
+            for (i, rect) in socket_rectangles(outputs, output_socket_layout).enumerate() {
+                if rect.is_over(abs_point) {
+                    return Some((SocketType::Output, i));
+                }
+            }
+            None
+        };
+
+        #[derive(Copy, Clone)]
+        enum Interaction { Hover, Press }
+        let maybe_socket_interaction = ui.widget_input(id)
+            .mouse()
+            .and_then(|m| match m.buttons.left().is_down() {
+                // If the mouse isn't down, we must be hovering over the widget.
+                false => over_socket(m.abs_xy()).map(|(ty, ix)| (ty, ix, Interaction::Hover)),
+                // Otherwise we're currently pressing some part of the widget.
+                true => {
+                    // If the left mouse button was just pressed, check to see if over a socket.
+                    if ui.widget_input(id).presses().mouse().left().next().is_some() {
+                        let maybe_socket = over_socket(m.abs_xy());
+                        if maybe_socket.is_some() {
+                            state.update(|state| state.capturing_socket = maybe_socket);
+                        }
+                    }
+                    // If some socket is captured by the mouse, it's pressed.
+                    state.capturing_socket.map(|(ty, ix)| (ty, ix, Interaction::Press))
+                },
+            });
+
+        // A function for producing the triangles for sockets along some axis.
+        let socket_color = style.socket_color(&ui.theme);
+        let socket_triangles = |socket_type, n_sockets, layout| {
+            socket_rectangles(n_sockets, layout)
+                .enumerate()
+                .flat_map(move |(i, rect)| {
+                    let (tri_a, tri_b) = widget::primitive::shape::rectangle::triangles(rect);
+                    let color = match maybe_socket_interaction {
+                        Some((ty, ix, action)) if ty == socket_type && ix == i => match action {
+                            Interaction::Hover => socket_color.highlighted(),
+                            Interaction::Press => socket_color.clicked(),
+                        },
+                        _ => socket_color,
+                    };
+                    let rgba = color.into();
+                    let a = color_triangle(tri_a, rgba);
+                    let b = color_triangle(tri_b, rgba);
+                    once(a).chain(once(b))
+                })
+        };
+
+        // Triangles for sockets.
+        let input_socket_triangles = socket_triangles(SocketType::Input, inputs, input_socket_layout);
+        let output_socket_triangles = socket_triangles(SocketType::Output, outputs, output_socket_layout);
 
         // Submit the triangles for the graphical elements of the widget.
-        let triangles = inner_triangles.map(|tri| color_triangle(tri, inner_color))
-            .chain(border_triangles.iter().cloned().map(|tri| color_triangle(tri, border_color)))
-            .chain(input_socket_triangles.map(|tri| color_triangle(tri, socket_color)))
-            .chain(output_socket_triangles.map(|tri| color_triangle(tri, socket_color)));
+        let triangles = inner_triangles
+            .chain(border_triangles)
+            .chain(input_socket_triangles)
+            .chain(output_socket_triangles);
         widget::Triangles::multi_color(triangles)
             .with_bounding_rect(rect)
             .graphics_for(id)

@@ -1,8 +1,7 @@
 #[macro_use] extern crate conrod;
 #[macro_use] extern crate conrod_derive;
 
-use conrod::{color, widget, Color, Colorable, Point, Positionable, Scalar, Widget, UiCell};
-use conrod::position::{Direction, Range, Rect};
+use conrod::{color, widget, Color, Colorable, Point, Positionable, Scalar, Widget, Ui, UiCell};
 use conrod::utils::IterDiff;
 use std::any::{Any, TypeId};
 use std::cell::Cell;
@@ -81,12 +80,6 @@ pub struct Style {
     /// Shape styling for the inner rectangle.
     #[conrod(default = "color::TRANSPARENT")]
     pub background_color: Option<Color>,
-    /// Default layout for node input sockets.
-    #[conrod(default = "SocketLayout { side: SocketSide::Left, direction: Direction::Backwards }")]
-    pub input_socket_layout: Option<SocketLayout>,
-    /// Default layout for node output sockets.
-    #[conrod(default = "SocketLayout { side: SocketSide::Right, direction: Direction::Backwards }")]
-    pub output_socket_layout: Option<SocketLayout>,
 }
 
 widget_ids! {
@@ -237,14 +230,18 @@ pub enum Event<NI> {
     Edge(EdgeEvent<NI>),
 }
 
-/// Represents a socket connection on a node (can be input or output).
+/// Represents a socket connection on a node.
+///
+/// Assumed to be either an input or output socket based on its usage within a tuple. E.g. given
+/// two sockets *(a, b)*, socket *a*'s `socket_index` refers its index within `a`'s ***output***
+/// socket list, while *b*'s refers its index within `b`'s ***input*** socket list.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodeSocket<NI> {
     /// The unique identifier for the node.
     pub id: NI,
-    /// The index of the socket within the node.
+    /// The index of the socket on one side of the node.
     ///
-    /// E.g. if the socket is the 3rd socket, index would be `2`.
+    /// E.g. if the socket is the 3rd output socket, index would be `2`.
     pub socket_index: usize,
 }
 
@@ -313,8 +310,6 @@ pub struct Camera {
 pub struct Session<NI: NodeId> {
     // The unique identifier used to instantiate the graph widget.
     graph_id: widget::Id,
-    // How to layout the node sockets if the user does not specify them manually.
-    socket_layouts: SocketLayouts,
     // State shared with the `Graph` widget.
     shared: Weak<Mutex<Shared<NI>>>,
 }
@@ -397,8 +392,6 @@ pub struct Edges<'a, NI: 'a + NodeId> {
     shared: Arc<Mutex<Shared<NI>>>,
     // The `widget::Id` of the parent graph widget.
     graph_id: widget::Id,
-    // How to layout the node sockets if the user does not specify them manually.
-    socket_layouts: SocketLayouts,
     // Bind the lifetime to the `SessionEdges` so the user can't leak the `Shared` state.
     lifetime: PhantomData<&'a ()>,
 }
@@ -409,8 +402,6 @@ pub struct Edges<'a, NI: 'a + NodeId> {
 pub struct Edge<'a, NI: NodeId> {
     // The `widget::Id` of the `Edge`'s parent `Graph` widget.
     graph_id: widget::Id,
-    // How to layout the node sockets if the user does not specify them manually.
-    socket_layouts: SocketLayouts,
     // The data shared with the graph state, used to access the `WidgetIdMap`.
     shared: Arc<Mutex<Shared<NI>>>,
     // The start of the edge.
@@ -546,9 +537,8 @@ where
     /// Produce an iterator yielding an `Edge` for each node present in the graph.
     pub fn edges(&mut self) -> Edges<NI> {
         let graph_id = self.session.graph_id;
-        let socket_layouts = self.session.socket_layouts;
         let shared = self.session.shared.upgrade().expect("failed to access `Shared` state");
-        Edges { index: 0, shared, graph_id, socket_layouts, lifetime: PhantomData }
+        Edges { index: 0, shared, graph_id, lifetime: PhantomData }
     }
 }
 
@@ -566,7 +556,6 @@ where
                 guard.edges.get(index).map(|&(start, end)| {
                     Edge {
                         graph_id: self.graph_id,
-                        socket_layouts: self.socket_layouts,
                         shared: self.shared.clone(),
                         start: start,
                         end: end,
@@ -675,59 +664,6 @@ where
         (self.start, self.end)
     }
 
-    /// Calls `widget` with a straight `Line` widget.
-    ///
-    /// The `ui` is used to retrieve the bounding boxes of the connected nodes for calculating
-    /// default socket layout.
-    pub fn straight_line(self, ui: &UiCell) -> EdgeWidget<'a, NI, widget::Line> {
-        let (start_xy, end_xy) = {
-            let shared = self.shared.lock().unwrap();
-
-            // Get the bounding widget rectangle for the node associated with the given ID.
-            fn node_rect<NI: NodeId>(node_id: &NI, shared: &Shared<NI>, ui: &UiCell) -> conrod::Rect {
-                shared.widget_id_map.node_widget_ids
-                    .get(&node_id)
-                    .and_then(|&w_id| ui.rect_of(w_id))
-                    .unwrap_or_else(|| {
-                        let xy = shared.nodes.get(&node_id).map(|n| n.point).unwrap_or([0.0; 2]);
-                        Rect::from_xy_dim(xy, [0.0; 2])
-                    })
-            }
-
-            // The position of a socket along some range given its index and layout direction.
-            fn range_scalar(index: usize, range: Range, direction: Direction) -> Scalar {
-                const SOCKET_PADDING: Scalar = 10.0;
-                const PAD: Scalar = SOCKET_PADDING / 2.0;
-                match direction {
-                    Direction::Forwards => range.start + PAD + index as Scalar * SOCKET_PADDING,
-                    Direction::Backwards => range.end - PAD - index as Scalar * SOCKET_PADDING,
-                }
-            }
-
-            // Find the position of the socket given its index, rect and socket layout.
-            fn socket_point(index: usize, rect: Rect, layout: &SocketLayout) -> Point {
-                match layout.side {
-                    SocketSide::Left => [rect.x.start, range_scalar(index, rect.y, layout.direction)],
-                    SocketSide::Right => [rect.x.end, range_scalar(index, rect.y, layout.direction)],
-                    SocketSide::Bottom => [range_scalar(index, rect.x, layout.direction), rect.y.start],
-                    SocketSide::Top => [range_scalar(index, rect.x, layout.direction), rect.y.end],
-                }
-            }
-
-            let start_rect = node_rect(&self.start.id, &shared, ui);
-            let end_rect = node_rect(&self.end.id, &shared, ui);
-            let start_xy = socket_point(self.start.socket_index, start_rect, &self.socket_layouts.output);
-            let end_xy = socket_point(self.end.socket_index, end_rect, &self.socket_layouts.input);
-
-            (start_xy, end_xy)
-        };
-
-        // TODO: Offset this position based on each node's bounding rect. Perhaps add a map to
-        // shared state that goes `node_id` -> `widget::Id` to achieve this?
-        let line = widget::Line::abs(start_xy, end_xy);
-        self.widget(line)
-    }
-
     /// Specify the widget to use 
     pub fn widget<W>(self, widget: W) -> EdgeWidget<'a, NI, W> {
         EdgeWidget {
@@ -736,6 +672,51 @@ where
             widget_id: Cell::new(None),
         }
     }
+}
+
+/// Returns the `widget::Id` for a node if one exists.
+///
+/// Returns `None` if there is no `Graph` for the given `graph_id` or if there is not yet a
+/// `widget::Id` for the given `node_id`.
+///
+/// This will always return `None` if called between calls to the `Graph::set` and node
+/// instantiation stages, as `widget::Id`s for nodes are only populated during the node
+/// instantiation stage.
+pub fn node_widget_id<NI>(node_id: NI, graph_id: widget::Id, ui: &Ui) -> Option<widget::Id>
+where
+    NI: NodeId,
+{
+    ui.widget_graph()
+        .widget(graph_id)
+        .and_then(|container| container.state_and_style::<State<NI>, Style>())
+        .and_then(|unique| {
+            let shared = unique.state.shared.lock().unwrap();
+            shared.widget_id_map.node_widget_ids.get(&node_id).map(|&id| id)
+        })
+}
+
+/// Returns the `widget::Id`s for the start and end nodes.
+///
+/// `Edge`s can only exist for the lifetime of a `SessionEdges`, thus we assume that there will
+/// always be a `Graph` for the edge's `graph_id` and that there will always be a `widget::Id` for
+/// the start and end nodes.
+///
+/// **Panic!**s if the given `Ui` is not the same one used to create the edge's parent Graph
+/// widget.
+pub fn edge_node_widget_ids<NI>(edge: &Edge<NI>, ui: &Ui) -> (widget::Id, widget::Id)
+where
+    NI: NodeId,
+{
+    ui.widget_graph()
+        .widget(edge.graph_id)
+        .and_then(|container| container.state_and_style::<State<NI>, Style>())
+        .map(|unique| {
+            let shared = unique.state.shared.lock().unwrap();
+            let a = shared.widget_id_map.node_widget_ids.get(&edge.start.id).map(|&id| id);
+            let b = shared.widget_id_map.node_widget_ids.get(&edge.end.id).map(|&id| id);
+            (a.expect("no `widget::Id` for start node"), b.expect("no `widget::Id` for end node"))
+        })
+        .expect("no graph associated with edge's `graph_id` was found")
 }
 
 impl<'a, NI, W> EdgeWidget<'a, NI, W>
@@ -922,14 +903,9 @@ where
         // Clear the old node->widget mappings ready for node instantiation.
         shared.widget_id_map.clear_node_mappings();
 
-        // Retrieve the socket layouts for edge instantiation.
-        let input = style.input_socket_layout(&ui.theme);
-        let output = style.output_socket_layout(&ui.theme);
-        let socket_layouts = SocketLayouts { input, output };
-
         let graph_id = id;
         let shared = Arc::downgrade(&state.shared);
-        let session = Session { graph_id, socket_layouts, shared };
+        let session = Session { graph_id, shared };
         SessionEvents { session }
     }
 }
