@@ -4,9 +4,9 @@
 extern crate conrod_graph_widget;
 extern crate petgraph;
 
-use conrod::{widget, Labelable, Positionable, Sizeable, Widget};
+use conrod::{widget, Borderable, Labelable, Positionable, Sizeable, Widget};
 use conrod::backend::glium::glium::{self, Surface};
-use conrod_graph_widget::{Event, EdgeEvent, NodeEvent, NodeSocket, Graph};
+use conrod_graph_widget::{Event, EdgeEvent, Node, NodeEvent, NodeSocket, Graph};
 use std::collections::HashMap;
 
 
@@ -219,16 +219,10 @@ fn set_widgets(ui: &mut conrod::UiCell, ids: &Ids, graph: &mut MyGraph, layout: 
         //
         // `wiget_id` - The widget identifier for the widget that will represent this node.
         let node_id = node.node_id();
-        let button = widget::Button::new()
-            .label(&graph[node_id])
-            .w_h(100.0, 30.0);
-        let node_widget = node.widget(button);
+        let button = widget::Button::new().label(&graph[node_id]).border(0.0);
+        let widget = Node::new(button).inputs(3).outputs(3).w_h(100.0, 60.0);
 
-        // The `NodeWidget` can then be used to instantiate the widget within the `Ui` using `set`.
-        //
-        // Just like `Widget::set`, this returns the events yielded by the inner widget.
-        let events = node_widget.set(ui);
-        for _click in events {
+        for _click in node.widget(widget).set(ui).widget_event {
             println!("{} was clicked!", &graph[node_id]);
         }
     }

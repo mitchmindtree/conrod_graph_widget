@@ -12,6 +12,10 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, Weak};
 
+pub use self::node::{Node, SocketLayout, SocketSide};
+
+pub mod node;
+
 /// Traits required by types that may be used as a graph node identifier.
 ///
 /// This trait has a blanket implementation for all types that satisfy the bounds.
@@ -61,7 +65,7 @@ where
     /// Data necessary and common for all widget builder types.
     #[conrod(common_builder)]
     pub common: widget::CommonBuilder,
-    /// Unique styling for the **BorderedRectangle**.
+    /// Unique styling for the **Graph**.
     pub style: Style,
     /// All nodes within the graph that the widget is to represent.
     pub nodes: N,
@@ -92,13 +96,12 @@ widget_ids! {
     }
 }
 
-/// Unique state for the `BorderedRectangle`.
+/// Unique state for the `Graph`.
 pub struct State<NI>
 where
     NI: NodeId,
 {
     ids: Ids,
-    //graph: PGraph,
     shared: Arc<Mutex<Shared<NI>>>,
 }
 
@@ -118,26 +121,6 @@ where
     edges: Vec<(NodeSocket<NI>, NodeSocket<NI>)>,
     // A map from type identifiers to available `widget::Id`s for those types.
     widget_id_map: WidgetIdMap<NI>,
-}
-
-/// Represents the side of a node widget's bounding rectangle.
-///
-/// This is used to describe default node socket layout.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum SocketSide {
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
-/// Describes the layout of either input or output sockets.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct SocketLayout {
-    /// Represents the side of a node widget's bounding rectangle.
-    pub side: SocketSide,
-    /// The direction in which sockets will be laid out over the side.
-    pub direction: Direction,
 }
 
 // A type for managing the input and output socket layouts.
@@ -358,9 +341,9 @@ pub struct Events<'a, NI: NodeId> {
     lifetime: PhantomData<&'a ()>,
 }
 
-/// An iterator-like type yielding a `Node` for every node in the graph.
+/// An iterator-like type yielding a `NodeContext` for every node in the graph.
 ///
-/// Each `Node` can be used for instantiating a widget for each node in the graph.
+/// Each `NodeContext` can be used for instantiating a widget for each node in the graph.
 pub struct Nodes<'a, NI: 'a + NodeId> {
     // Index into the `node_ids`, indicating which node we're up to.
     index: usize,
@@ -384,30 +367,30 @@ struct NodeInner {
 /// 1. Get the position of the node via `point()`.
 /// 2. Get the ID for this node via `node_id()`.
 /// 3. Convert into a `NodeWidget` ready for instantiation within the `Ui` via `widget(a_widget)`.
-pub struct Node<'a, NI: 'a + NodeId> {
+pub struct NodeContext<'a, NI: 'a + NodeId> {
     node_id: NI,
     point: Point,
-    // The `widget::Id` of the `Node`'s parent `Graph` widget.
+    // The `widget::Id` of the `NodeContext`'s parent `Graph` widget.
     graph_id: widget::Id,
     shared: Arc<Mutex<Shared<NI>>>,
     // Bind the lifetime to the `SessionNodes` so the user can't leak the `Shared` state.
     lifetime: PhantomData<&'a NI>,
 }
 
-/// Returned when a `Node` is assigned a widget.
+/// Returned when a `NodeContext` is assigned a widget.
 ///
 /// This intermediary type allows for accessing the `widget::Id` before the widget itself is
 /// instantiated.
 pub struct NodeWidget<'a, NI: 'a + NodeId, W> {
-    node: Node<'a, NI>,
+    node: NodeContext<'a, NI>,
     widget: W,
     // `None` if not yet requested the `WidgetIdMap`. `Some` if it has.
     widget_id: Cell<Option<widget::Id>>,
 }
 
-/// An iterator-like type yielding a `Node` for every node in the graph.
+/// An iterator-like type yielding a `NodeContext` for every node in the graph.
 ///
-/// Each `Node` can be used for instantiating a widget for each node in the graph.
+/// Each `NodeContext` can be used for instantiating a widget for each node in the graph.
 pub struct Edges<'a, NI: 'a + NodeId> {
     // The index into the `shared.edges` `Vec` that for the next `Edge` that is to be yielded.
     index: usize,
@@ -515,7 +498,7 @@ impl<NI> SessionNodes<NI>
 where
     NI: NodeId,
 {
-    /// Produce an iterator yielding a `Node` for each node present in the graph.
+    /// Produce an iterator yielding a `NodeContext` for each node present in the graph.
     pub fn nodes(&mut self) -> Nodes<NI> {
         let graph_id = self.session.graph_id;
         let shared = self.session.shared.upgrade().expect("failed to access `Shared` state");
@@ -533,7 +516,7 @@ impl<'a, NI> Iterator for Nodes<'a, NI>
 where
     NI: NodeId,
 {
-    type Item = Node<'a, NI>;
+    type Item = NodeContext<'a, NI>;
     fn next(&mut self) -> Option<Self::Item> {
         let index = self.index;
         self.index += 1;
@@ -545,7 +528,7 @@ where
                     .and_then(|&id| guard.nodes.get(&id).map(|&inner| (id, inner)))
             })
             .map(|(node_id, NodeInner { point })| {
-                Node {
+                NodeContext {
                     node_id,
                     point,
                     graph_id: self.graph_id,
@@ -594,7 +577,7 @@ where
     }
 }
 
-impl<'a, NI> Node<'a, NI>
+impl<'a, NI> NodeContext<'a, NI>
 where
     NI: NodeId,
 {
@@ -663,7 +646,7 @@ impl<'a, NI, W> std::ops::Deref for NodeWidget<'a, NI, W>
 where
     NI: NodeId,
 {
-    type Target = Node<'a, NI>;
+    type Target = NodeContext<'a, NI>;
     fn deref(&self) -> &Self::Target {
         &self.node
     }
