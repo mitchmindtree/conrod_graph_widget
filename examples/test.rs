@@ -220,8 +220,14 @@ fn set_widgets(ui: &mut conrod::UiCell, ids: &Ids, graph: &mut MyGraph, layout: 
         let node_id = node.node_id();
         let inputs = graph.neighbors_directed(node_id, petgraph::Incoming).count();
         let outputs = graph.neighbors_directed(node_id, petgraph::Outgoing).count();
-        let button = widget::Button::new().label(&graph[node_id]).border(0.0);
-        let widget = Node::new(button).inputs(inputs).outputs(outputs).w_h(100.0, 60.0);
+        let button = widget::Button::new()
+            .label(&graph[node_id])
+            .border(0.0);
+        let widget = Node::new(button)
+            .inputs(inputs)
+            .outputs(outputs)
+            .socket_color(conrod::color::LIGHT_RED)
+            .w_h(100.0, 60.0);
         for _click in node.widget(widget).set(ui).widget_event {
             println!("{} was clicked!", &graph[node_id]);
         }

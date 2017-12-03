@@ -157,6 +157,12 @@ impl<W> Node<W> {
         self
     }
 
+    /// Specify the color for the node's sockets.
+    pub fn socket_color(mut self, color: Color) -> Self {
+        self.style.socket_color = Some(color);
+        self
+    }
+
     /// Specify the layout of the input sockets.
     pub fn input_socket_layout(mut self, layout: SocketLayout) -> Self {
         self.style.input_socket_layout = Some(layout);
@@ -440,26 +446,8 @@ where
             state.update(|state| state.outputs = outputs);
         }
 
-        // Colors the given triangle with the given color.
-        fn color_triangle(Triangle(arr): Triangle<Point>, color: color::Rgba) -> Triangle<ColoredPoint> {
-            Triangle([(arr[0], color), (arr[1], color), (arr[2], color)])
-        }
-
-        // The triangles for the inner rectangle surface first.
-        let inner_rect = rect.pad(border);
-        let (inner_tri_a, inner_tri_b) = widget::primitive::shape::rectangle::triangles(inner_rect);
-        let inner_color = style.color(&ui.theme).into();
-        let inner_triangles = once(inner_tri_a)
-            .chain(once(inner_tri_b))
-            .map(|tri| color_triangle(tri, inner_color));
-
-        // Triangles for the border.
-        let border_color = style.border_color(&ui.theme).into();
-        let border_triangles = widget::bordered_rectangle::border_triangles(rect, border).unwrap();
-        let border_triangles = border_triangles
-            .iter()
-            .cloned()
-            .map(|tri| color_triangle(tri, border_color));
+        let input_socket_layout = style.input_socket_layout(&ui.theme);
+        let output_socket_layout = style.output_socket_layout(&ui.theme);
 
         // A function for producing the rectangles of sockets along some axis.
         let socket_rectangles = |n_sockets, layout| {
@@ -472,9 +460,6 @@ where
                 socket_length,
             }
         };
-
-        let input_socket_layout = style.input_socket_layout(&ui.theme);
-        let output_socket_layout = style.output_socket_layout(&ui.theme);
 
         // Whether or not the given point is over a socket.
         let over_socket = |abs_point: Point| -> Option<(SocketType, usize)> {
@@ -511,6 +496,46 @@ where
                     state.capturing_socket.map(|(ty, ix)| (ty, ix, Interaction::Press))
                 },
             });
+
+        // Colors the given triangle with the given color.
+        fn color_triangle(Triangle(arr): Triangle<Point>, color: color::Rgba) -> Triangle<ColoredPoint> {
+            Triangle([(arr[0], color), (arr[1], color), (arr[2], color)])
+        }
+
+        // The triangles for the inner rectangle surface first.
+        let inner_rect = rect.pad(border);
+        let (inner_tri_a, inner_tri_b) = widget::primitive::shape::rectangle::triangles(inner_rect);
+        let inner_color = style.color(&ui.theme).into();
+        let inner_triangles = once(inner_tri_a)
+            .chain(once(inner_tri_b))
+            .map(|tri| color_triangle(tri, inner_color));
+
+        // Triangles for the border.
+        //
+        // Color the border based on interaction.
+        let border_color = style.border_color(&ui.theme);
+        let border_color = match maybe_socket_interaction.is_some() {
+            true => border_color,
+            false => {
+                ui.widget_input(id)
+                    .mouse()
+                    .map(|m| match inner_rect.is_over(m.abs_xy()) {
+                        true => border_color,
+                        false => match m.buttons.left().is_down() {
+                            true => border_color.clicked(),
+                            false => border_color.highlighted(),
+                        },
+                    })
+                    .unwrap_or(border_color)
+            },
+        };
+
+        let border_triangles = widget::bordered_rectangle::border_triangles(rect, border).unwrap();
+        let border_rgba = border_color.into();
+        let border_triangles = border_triangles
+            .iter()
+            .cloned()
+            .map(|tri| color_triangle(tri, border_rgba));
 
         // A function for producing the triangles for sockets along some axis.
         let socket_color = style.socket_color(&ui.theme);
