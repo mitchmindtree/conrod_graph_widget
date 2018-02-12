@@ -1,6 +1,9 @@
 conrod_graph_widget [![Build Status](https://travis-ci.org/mitchmindtree/conrod_graph_widget.svg?branch=master)](https://travis-ci.org/mitchmindtree/conrod_graph_widget) [![Crates.io](https://img.shields.io/crates/v/conrod_graph_widget.svg)](https://crates.io/crates/conrod_graph_widget) [![Crates.io](https://img.shields.io/crates/l/conrod_graph_widget.svg)](https://github.com/mitchmindtree/conrod_graph_widget/blob/master/LICENSE-MIT) [![docs.rs](https://docs.rs/conrod_graph_widget/badge.svg)](https://docs.rs/conrod_graph_widget/)
 ===
 
+**Note: This crate is now deprecated as the widget has been moved into
+[conrod](https://github.com/pistondevelopers/conrod) itself**
+
 A general use widget for viewing and controlling graphs.
 
 Designed to be a foundation for node-graph GUIs similar in design to Max/MSP,
